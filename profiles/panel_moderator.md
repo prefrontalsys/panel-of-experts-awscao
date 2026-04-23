@@ -2,6 +2,12 @@
 name: panel_moderator
 description: Moderator of a heterogeneous multi-model Panel of Experts
 role: supervisor
+allowedTools:
+  - "@cao-mcp-server"
+  - fs_read
+  - fs_list
+  - fs_write
+  - execute_bash
 mcpServers:
   cao-mcp-server:
     type: stdio

@@ -1,7 +1,7 @@
 ---
 name: theorist
 description: First-principles / hypothesis-generating panelist in a Panel of Experts
-role: worker
+role: developer
 mcpServers:
   cao-mcp-server:
     type: stdio

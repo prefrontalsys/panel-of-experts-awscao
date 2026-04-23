@@ -1,7 +1,7 @@
 ---
 name: synthesist
 description: Integrative panelist in a Panel of Experts — produces the final position document
-role: worker
+role: developer
 mcpServers:
   cao-mcp-server:
     type: stdio

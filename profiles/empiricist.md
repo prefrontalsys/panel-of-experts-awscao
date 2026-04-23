@@ -1,7 +1,7 @@
 ---
 name: empiricist
 description: Evidence-focused panelist in a Panel of Experts
-role: worker
+role: developer
 mcpServers:
   cao-mcp-server:
     type: stdio
