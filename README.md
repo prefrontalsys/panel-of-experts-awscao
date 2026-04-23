@@ -86,7 +86,11 @@ tmux attach -t panel-<timestamp>
 
 Transcript lands in `transcripts/<topic-slug>/`.
 
-## Design Status
+## Status
+
+**v0 BLOCKED (2026-04-23)** pending upstream fix to CAO's claude_code banner-detection logic. See [docs/known-issues.md](docs/known-issues.md). The 5 profiles and launcher are complete; any panelist routed to `claude_code` currently fails to initialize. Project is punted until upstream resolves, or until the moderator is rerouted to a non-claude provider and tested.
+
+## Design Notes
 
 - **v0 (current)**: 5 profiles, 4-round protocol, manual launch. Uses CAO's 7 built-in providers.
 - **Known limitation**: CAO's provider list is hardcoded (7 CLIs). Expanding to arbitrary CLIs (Ollama, local models, custom wrappers) requires forking CAO or upstreaming a pluggable-provider PR. See `Agent/Memory/idea_cao_pluggable_providers.md` in the vault.

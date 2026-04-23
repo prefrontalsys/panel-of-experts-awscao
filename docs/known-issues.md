@@ -1,65 +1,63 @@
 # Known Issues
 
-## CAO 30-second Claude Code cold-start timeout
+## BLOCKER: CAO banner-detection fails for claude_code workers
 
-**Symptom**: `cao launch` with `--provider claude_code` fails with:
+**Status**: Punted 2026-04-23 pending upstream fix. Project is blocked on this for any panelist using `claude_code` provider.
+
+**Symptom**: `cao launch --provider claude_code ...` fails with:
 
 ```
 500 Server Error: Internal Server Error
 {"detail":"Failed to create session: Claude Code initialization timed out after 30 seconds"}
 ```
 
-**Cause**: `cli_agent_orchestrator/providers/claude_code.py` hardcodes a 30-second deadline for Claude Code to print its startup markers (`────────` separator or "Claude Code" banner text). Claude Code installations with many MCP servers, hooks, and plugins routinely exceed 30s on cold start.
+The same failure occurs for in-session `cao_assign` calls that spawn new `claude_code` workers.
 
-**Workaround**: Patch the installed CAO to extend the deadline. Edit:
+**Evidence** (from `~/.aws/cli-agent-orchestrator/logs/cao_*.log`):
 
 ```
-~/.local/share/uv/tools/cli-agent-orchestrator/lib/python3.14/site-packages/cli_agent_orchestrator/providers/claude_code.py
+10:58:33  Created tmux session
+10:58:36,433  Shell ready
+10:58:36,492  send_keys: claude --dangerously-skip-permissions ...
+10:58:36,860  Claude Code idle prompt detected, no prompts needed   ← claude IS ready ~370ms after send_keys
+10:59:07,479  ERROR - Claude Code initialization timed out after 30 seconds
+10:59:07,533  Killed tmux session
 ```
 
-Change:
+Claude Code boots in under a second. The inner `_handle_startup_prompts` loop detects the idle REPL prompt correctly. The OUTER loop in `ClaudeCodeProvider.initialize()` (at `cli_agent_orchestrator/providers/claude_code.py:277-295`) then runs for the full 30s without matching, and the init fails.
 
-```python
-deadline = time.time() + 30.0
-```
+**Hypothesis**: The outer loop requires BOTH (a) banner markers in `new_content` (regex looks for `──────` horizontal rule, or the literal strings "Claude Code" / "bypass permissions" / "trust this folder") AND (b) `get_status()` returning IDLE/COMPLETED. With `--dangerously-skip-permissions` (passed unconditionally by CAO), claude may not print the banner markers the outer loop expects. The inner loop returns early on idle detection; the outer loop keeps waiting for a banner that never appears.
 
-to:
+**Uncertainty**: This hypothesis is not independently verified. A prior successful launch of `code_supervisor` on `claude_code` (terminal e3bc3e33 in session cao-1021d701) booted fine on the same CAO version. Something about the `panel_moderator` profile (prompt length? option combination? timing?) is specific to this failure. Establishing the precise root cause requires a proper CAO dev bench, which this project does not have.
 
-```python
-deadline = time.time() + 90.0
-```
+**Decision**: Do not patch AWS's installed code. File upstream issue; wait for fix. Keep the v0 repo as a complete reference implementation that will start working when CAO's banner detection is fixed upstream.
 
-The patch survives until you `uv tool upgrade cli-agent-orchestrator`, at which point you must re-apply it.
+**What does NOT work today**:
+- `cao launch --agents panel_moderator --provider claude_code ...`
+- `bin/panel "<topic>"`
+- In-session `cao_assign(agent_name="panel_moderator")` from any existing CAO supervisor on claude_code
 
-**Proper fix**: Upstream PR making the timeout configurable via env var (e.g., `CAO_CLAUDE_INIT_TIMEOUT`) or `settings.json`. Not yet filed.
+**What MIGHT work today** (untested):
+- Rerouting panelists to non-claude_code providers (`gemini_cli`, `codex`, `copilot_cli`). The banner bug is in `claude_code.py`; other providers have different init paths.
+- Moderator on `codex` or `gemini_cli` is a design compromise — Claude is the strongest synthesizer — but would unblock v0 if tested successfully.
 
 ## Built-in CAO roles restrict Write/Edit
 
-**Symptom**: On launch, the moderator shows `Blocked: Bash, Edit, Write` — which breaks its job of writing transcripts.
+CAO's built-in roles (`supervisor`, `reviewer`, `developer`) are defined in `cli_agent_orchestrator/constants.py` as fixed allowed-tools sets. `supervisor` has only `@cao-mcp-server, fs_read, fs_list` — no write access. `developer` is the most permissive built-in (`@builtin, fs_*, execute_bash, @cao-mcp-server`).
 
-**Cause**: CAO's built-in roles (`supervisor`, `reviewer`, `developer`) are defined in `cli_agent_orchestrator/constants.py` as fixed allowed-tools sets. `supervisor` has only `@cao-mcp-server, fs_read, fs_list` — no write access.
-
-**Workaround (applied in this repo)**: Profiles declare explicit `allowedTools` in frontmatter to override role defaults. The moderator profile sets:
-
-```yaml
-role: supervisor
-allowedTools:
-  - "@cao-mcp-server"
-  - fs_read
-  - fs_list
-  - fs_write
-  - execute_bash
-```
-
-Panelists use `role: developer` (which already includes `fs_*` and `execute_bash`).
+**Workaround applied in this repo**:
+- Panelist profiles use `role: developer` (has `fs_*` and `execute_bash`)
+- Moderator uses `role: supervisor` + explicit `allowedTools` in frontmatter that include `fs_write` and `execute_bash`
 
 ## `role: worker` is not a built-in role
 
-**Symptom**: `Unknown role 'worker' — falling back to unrestricted. Define custom roles in settings.json under 'roles'.`
+CAO has exactly three built-in roles: `supervisor`, `reviewer`, `developer`. An unknown role name (`worker`, `panelist`, anything else) produces:
 
-**Cause**: CAO has exactly three built-in roles: `supervisor`, `reviewer`, `developer`. "Worker" is a colloquial term for "non-supervisor agent" but has no built-in mapping.
+```
+Unknown role 'X' — falling back to unrestricted. Define custom roles in settings.json under 'roles'.
+```
 
-**Workaround**: Panelist profiles in this repo use `role: developer`. If a tighter tool set is needed, define a custom role in `~/.aws/cli-agent-orchestrator/settings.json`:
+**Workarounds**: (a) use `role: developer`, or (b) define a custom role in `~/.aws/cli-agent-orchestrator/settings.json`:
 
 ```json
 {
