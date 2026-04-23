@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Install all 5 Panel of Experts profiles into CAO.
+# Idempotent — re-running updates existing profiles.
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PROFILES_DIR="$REPO_ROOT/profiles"
+
+if ! command -v cao >/dev/null 2>&1; then
+  echo "error: cao CLI not found on PATH. Install with: uv tool install cli-agent-orchestrator" >&2
+  exit 1
+fi
+
+install_one() {
+  local name="$1"
+  local provider="$2"
+  local file="$PROFILES_DIR/${name}.md"
+
+  if [[ ! -f "$file" ]]; then
+    echo "error: profile not found: $file" >&2
+    return 1
+  fi
+
+  echo "installing $name (provider: $provider)..."
+  cao install "$file" --provider "$provider"
+}
+
+# Provider assignments — v0. Edit to experiment with different routings.
+install_one "panel_moderator"  "claude_code"
+install_one "empiricist"       "gemini_cli"
+install_one "theorist"         "claude_code"
+install_one "devils_advocate"  "codex"
+install_one "synthesist"       "claude_code"
+
+echo ""
+echo "all 5 panelist profiles installed."
+echo "launch a panel: $REPO_ROOT/bin/panel \"<your question>\""

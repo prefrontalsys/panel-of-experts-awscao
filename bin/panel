@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Launch a Panel of Experts session on a topic.
+#
+# Usage:
+#   panel "<debatable proposition>"
+#   panel --headless "<topic>"   # detached mode
+#
+# The moderator writes transcripts to ~/panel-of-experts/transcripts/<slug>/
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TRANSCRIPT_DIR="$REPO_ROOT/transcripts"
+HEADLESS=""
+
+if [[ "${1:-}" == "--headless" ]]; then
+  HEADLESS="--headless --async --auto-approve"
+  shift
+fi
+
+TOPIC="${*:-}"
+if [[ -z "$TOPIC" ]]; then
+  echo "usage: panel [--headless] \"<topic>\"" >&2
+  exit 1
+fi
+
+SLUG="$(date -u +%Y%m%d-%H%M%S)-$(echo "$TOPIC" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40)"
+SESSION="panel-$SLUG"
+
+mkdir -p "$TRANSCRIPT_DIR/$SLUG"
+
+export PANEL_TRANSCRIPT_DIR="$TRANSCRIPT_DIR"
+
+INITIAL_MESSAGE="You are moderating a Panel of Experts session.
+
+Topic: $TOPIC
+
+Transcript directory: $TRANSCRIPT_DIR/$SLUG/
+Transcript slug: $SLUG
+
+Follow the dialog protocol in your profile (rounds 1-3, optional 4). Write all panelist turns to the transcript directory as they happen. Panelists are named: empiricist, theorist, devils_advocate, synthesist.
+
+Begin with Round 1 — frame the topic as a debatable proposition, write the framing to $TRANSCRIPT_DIR/$SLUG/framing.md, then dispatch the proposition to the first three panelists in parallel via cao_assign."
+
+echo "launching panel session: $SESSION"
+echo "transcript: $TRANSCRIPT_DIR/$SLUG/"
+echo ""
+
+# shellcheck disable=SC2086
+cao launch \
+  --agents panel_moderator \
+  --provider claude_code \
+  --session-name "$SESSION" \
+  --working-directory "$REPO_ROOT" \
+  $HEADLESS \
+  "$INITIAL_MESSAGE"
+
+if [[ -n "$HEADLESS" ]]; then
+  echo ""
+  echo "running detached. watch with:  tmux attach -t $SESSION"
+  echo "status:                         cao session status $SESSION"
+fi
