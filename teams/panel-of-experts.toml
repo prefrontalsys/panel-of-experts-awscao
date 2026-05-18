@@ -1,0 +1,36 @@
+# panel-of-experts — the v0 panel, expressed as a v1 team composition.
+#
+# Reproduces the original 5-profile setup. Use as the canonical example for
+# what a `team-build` input looks like.
+
+[team]
+name = "panel-of-experts"
+description = "Heterogeneous 4-panelist deliberation with moderator-coordinated rounds"
+protocol = "panel-protocol"              # references protocols/panel-protocol/
+moderator_role = "moderator"             # references roles/moderator.md
+moderator_provider = "claude_code"       # moderator runs on this provider
+moderator_extra_tools = [                # appended to base allowedTools
+  "execute_bash",                        # needed for transcript file writes
+  "fs_write",
+]
+
+# Panelists — each entry creates one panelist profile.
+# - role: filename in roles/ (without .md)
+# - provider: CAO provider — must differ across panelists for the heterogeneous-models commitment
+# - agent_name (optional): defaults to role name. Override if you want two panelists with same role on different providers.
+
+[[panelists]]
+role = "empiricist"
+provider = "gemini_cli"
+
+[[panelists]]
+role = "theorist"
+provider = "claude_code"
+
+[[panelists]]
+role = "devils_advocate"
+provider = "codex"
+
+[[panelists]]
+role = "synthesist"
+provider = "claude_code"

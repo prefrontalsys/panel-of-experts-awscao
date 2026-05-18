@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""team-build: assemble CAO agent profiles from a team TOML spec.
+
+Reads:
+    teams/<name>.toml              composition (roles + providers + protocol ref)
+    protocols/<protocol>/*.toml    round structure + co-located prompt .md files
+    roles/<role>.md                role primitives (identity + behavior)
+
+Writes:
+    generated/<team-name>/moderator.md
+    generated/<team-name>/<agent_name>.md   (one per panelist)
+
+Optionally installs the generated profiles into CAO via `cao install`.
+
+Usage:
+    bin/team-build <team-name>          # build only, write to generated/
+    bin/team-build <team-name> --install # build + cao install each profile
+    bin/team-build path/to/team.toml    # build by explicit path
+"""
+
+from __future__ import annotations
+
+import argparse
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+try:
+    import tomllib  # Python 3.11+
+except ModuleNotFoundError:  # pragma: no cover
+    import tomli as tomllib  # type: ignore
+
+REPO = Path(__file__).resolve().parent.parent
+
+# Base tools every agent gets. Moderator can extend via team.moderator_extra_tools.
+BASE_TOOLS = ["@cao-mcp-server", "fs_read", "fs_list"]
+
+
+def die(msg: str) -> None:
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def load_toml(path: Path) -> dict:
+    if not path.exists():
+        die(f"not found: {path}")
+    with path.open("rb") as f:
+        return tomllib.load(f)
+
+
+def yaml_quote(s: str) -> str:
+    """Minimal YAML scalar quoter. Wraps in double quotes if value contains
+    chars that have special meaning to YAML (colon, hash, etc.), or starts
+    with one of YAML's reserved indicators (-, ?, &, *, !, |, >, ', ", %, @, `).
+    """
+    needs_quote = (
+        any(c in s for c in ":#\"'\\")
+        or (s and s[0] in "-?&*!|>'\"%@`[]{,}")
+    )
+    if needs_quote:
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return s
+
+
+def render_frontmatter(name: str, description: str, provider: str, role: str, allowed_tools: list[str]) -> str:
+    tools_block = "\n".join(f"  - {yaml_quote(t)}" for t in allowed_tools)
+    return f"""---
+name: {yaml_quote(name)}
+description: {yaml_quote(description)}
+provider: {yaml_quote(provider)}
+role: {yaml_quote(role)}
+allowedTools:
+{tools_block}
+mcpServers:
+  cao-mcp-server:
+    type: stdio
+    command: cao-mcp-server
+---
+"""
+
+
+def render_panelist_list(panelists: list[dict]) -> str:
+    lines = ["## Panelists Under Your Supervision", ""]
+    for i, p in enumerate(panelists, 1):
+        agent = p.get("agent_name", p["role"])
+        lines.append(
+            f"{i}. **{p['role'].replace('_', ' ').title()}** "
+            f"(agent_name: `{agent}`, provider: `{p['provider']}`)"
+        )
+    lines.append("")
+    lines.append(
+        "Each panelist runs on a deliberately different model family. Provider diversity "
+        "is load-bearing — do not try to route panelists to the same model."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_protocol(protocol_dir: Path, protocol_toml: dict) -> str:
+    """Render the protocol section: per-round headers + co-located prompt contents."""
+    p = protocol_toml["protocol"]
+    rounds = protocol_toml["round"]
+    out = [f"## Dialog Protocol ({p['name']})", "", p.get("description", ""), ""]
+
+    mode_to_tool = {"parallel": "cao_assign (non-blocking)", "sequential": "cao_handoff (blocking)"}
+
+    for r in rounds:
+        optional_tag = " — OPTIONAL" if r.get("optional") else ""
+        out.append(f"### Round {r['n']} — {r['name']}{optional_tag}")
+        out.append("")
+        out.append(f"- **Mode**: `{r['mode']}` → use `{mode_to_tool.get(r['mode'], r['mode'])}`")
+        out.append(f"- **Dispatch to**: {', '.join(r['dispatch'])}")
+        if "input" in r:
+            out.append(f"- **Input**: {r['input']}")
+        out.append("")
+        prompt_path = protocol_dir / r["prompt_file"]
+        if not prompt_path.exists():
+            die(f"protocol references missing prompt file: {prompt_path}")
+        out.append(prompt_path.read_text().strip())
+        out.append("")
+
+    out.append(f"**Terminal round**: {p['terminal_round']} (round {p['terminal_round']} produces `{p['final_artifact']}`)")
+    out.append("")
+    return "\n".join(out)
+
+
+def render_team_context(team_name: str, panelists: list[dict], current: dict) -> str:
+    """Appendix for each panelist: which team they're on, who the other panelists are."""
+    others = [p for p in panelists if p["role"] != current["role"]]
+    lines = [
+        "",
+        f"## Team Context",
+        "",
+        f"You are a panelist on the **{team_name}** team. The other panelists are:",
+        "",
+    ]
+    for o in others:
+        lines.append(f"- **{o['role'].replace('_', ' ').title()}** (`{o.get('agent_name', o['role'])}` on `{o['provider']}`)")
+    lines.append("")
+    lines.append(
+        "All inter-panelist coordination is mediated by the moderator. You do not call other "
+        "panelists directly; you respond to dispatches from the moderator."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build(team_path: Path, do_install: bool) -> None:
+    team = load_toml(team_path)
+    t = team["team"]
+    panelists = team["panelists"]
+
+    # Apply defaults
+    for p in panelists:
+        p.setdefault("agent_name", p["role"])
+
+    # Validate: no duplicate providers across panelists (the heterogeneous-models commitment)
+    seen_providers: dict[str, str] = {}
+    for p in panelists:
+        if p["provider"] in seen_providers:
+            print(
+                f"warning: provider '{p['provider']}' used by both {seen_providers[p['provider']]} "
+                f"and {p['agent_name']} — heterogeneous-models commitment violated",
+                file=sys.stderr,
+            )
+        else:
+            seen_providers[p["provider"]] = p["agent_name"]
+
+    # Resolve protocol
+    protocol_dir = REPO / "protocols" / t["protocol"]
+    protocol = load_toml(protocol_dir / "protocol.toml")
+
+    # Resolve roles
+    moderator_role_path = REPO / "roles" / f"{t['moderator_role']}.md"
+    if not moderator_role_path.exists():
+        die(f"moderator role not found: {moderator_role_path}")
+    moderator_body = moderator_role_path.read_text().strip()
+
+    panelist_bodies: dict[str, str] = {}
+    for p in panelists:
+        role_path = REPO / "roles" / f"{p['role']}.md"
+        if not role_path.exists():
+            die(f"role not found for panelist {p['agent_name']}: {role_path}")
+        panelist_bodies[p["agent_name"]] = role_path.read_text().strip()
+
+    # Output dir
+    out_dir = REPO / "generated" / t["name"]
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+
+    # Render moderator
+    moderator_name = f"{t['name']}_moderator"
+    moderator_tools = BASE_TOOLS + t.get("moderator_extra_tools", [])
+    moderator_fm = render_frontmatter(
+        name=moderator_name,
+        description=f"Moderator of {t['name']}: {t.get('description', '')}",
+        provider=t["moderator_provider"],
+        role="supervisor",
+        allowed_tools=moderator_tools,
+    )
+    moderator_content = (
+        moderator_fm
+        + "\n"
+        + moderator_body
+        + "\n\n"
+        + render_panelist_list(panelists)
+        + "\n"
+        + render_protocol(protocol_dir, protocol)
+    )
+    moderator_path = out_dir / f"{moderator_name}.md"
+    moderator_path.write_text(moderator_content)
+
+    # Render panelists
+    generated_files = [moderator_path]
+    for p in panelists:
+        fm = render_frontmatter(
+            name=p["agent_name"],
+            description=f"{p['role'].replace('_', ' ').title()} panelist on {t['name']}",
+            provider=p["provider"],
+            role="developer",
+            allowed_tools=BASE_TOOLS + ["fs_write", "execute_bash"],
+        )
+        body = panelist_bodies[p["agent_name"]]
+        team_ctx = render_team_context(t["name"], panelists, p)
+        content = fm + "\n" + body + "\n" + team_ctx
+        out_path = out_dir / f"{p['agent_name']}.md"
+        out_path.write_text(content)
+        generated_files.append(out_path)
+
+    print(f"built {len(generated_files)} profiles in {out_dir}:")
+    for f in generated_files:
+        print(f"  - {f.relative_to(REPO)}")
+
+    if do_install:
+        if not shutil.which("cao"):
+            die("cao not on PATH — install with: uv tool install cli-agent-orchestrator")
+        print()
+        print("installing into CAO...")
+        for f in generated_files:
+            result = subprocess.run(["cao", "install", str(f)], capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"  ✗ {f.name}: {result.stderr.strip()}", file=sys.stderr)
+            else:
+                # cao install prints success markers; grep them for terseness
+                marker = next((l for l in result.stdout.splitlines() if "✓ Agent" in l), result.stdout.strip())
+                print(f"  {marker}")
+
+
+def resolve_team_path(arg: str) -> Path:
+    p = Path(arg)
+    if p.exists() and p.suffix == ".toml":
+        return p.resolve()
+    candidate = REPO / "teams" / f"{arg}.toml"
+    if candidate.exists():
+        return candidate
+    die(f"team not found: {arg} (looked for {p} and {candidate})")
+    return Path()  # unreachable; satisfies type checker
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("team", help="team name (resolves to teams/<name>.toml) or path to team.toml")
+    ap.add_argument("--install", action="store_true", help="also run `cao install` on each generated profile")
+    args = ap.parse_args()
+    build(resolve_team_path(args.team), args.install)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,52 @@
+# panel-protocol — the 4-round protocol from panel-of-experts v0.
+#
+# Each [[round]] is interpreted by the moderator, in order. Round prompt files
+# are co-located in this directory and contain instructions to the moderator
+# for that round (not dispatch payloads — the moderator crafts its own per-
+# panelist messages based on these instructions plus prior rounds' output).
+#
+# Mode determines the CAO dispatch primitive:
+#   parallel    → cao_assign (non-blocking, fan-out, panelists return via send_message)
+#   sequential  → cao_handoff (blocking, wait for return)
+#
+# dispatch is the list of role names (not agent_names) that participate this round.
+# The team TOML maps role → agent_name (often identical; differs if a team has
+# two panelists in the same role on different providers).
+
+[protocol]
+name = "panel-protocol"
+description = "Independent takes → cross-examination → synthesis → optional adversarial pass"
+terminal_round = 3                       # last mandatory round (round 4 is optional)
+final_artifact = "synthesis.md"          # name of the final output file in topic dir
+
+[[round]]
+n = 1
+name = "independent-takes"
+mode = "parallel"
+dispatch = ["empiricist", "theorist", "devils_advocate"]
+prompt_file = "round1-independent.md"
+
+[[round]]
+n = 2
+name = "cross-examination"
+mode = "sequential"
+dispatch = ["empiricist", "theorist", "devils_advocate"]  # moderator picks per-claim
+input = "round1-outputs"
+prompt_file = "round2-challenges.md"
+
+[[round]]
+n = 3
+name = "synthesis"
+mode = "sequential"
+dispatch = ["synthesist"]
+input = "all-prior-rounds"
+prompt_file = "round3-synthesis.md"
+
+[[round]]
+n = 4
+name = "final-adversarial"
+mode = "sequential"
+dispatch = ["devils_advocate"]
+input = "synthesis"
+prompt_file = "round4-final-adversarial.md"
+optional = true                          # moderator decides if synthesis "feels too clean"

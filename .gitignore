@@ -1,3 +1,4 @@
 transcripts/
+generated/
 .DS_Store
 *.log

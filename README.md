@@ -92,6 +92,30 @@ Transcript lands in `transcripts/<topic-slug>/`.
 
 **Important**: launch with `--auto-approve`, NOT `--yolo`. CAO's `--yolo` is documented to skip profile loading, which means it silently bypasses the frontmatter `provider:` field — every panelist would launch on `kiro_cli` (the CAO default), violating the cross-family disagreement property. See [docs/known-issues.md](docs/known-issues.md#active-intentional-upstream-design-surprising-in-practice--cao-launch---yolo-skips-frontmatter-provider).
 
+## v1 — TOML-configurable teams (experimental)
+
+The v0 layout hardcodes the 5-panelist Panel of Experts shape. v1 separates three concerns so you can compose other team variants (research teams, debate tournaments, custom protocols) without writing CAO profiles by hand:
+
+```
+roles/                  primitives: generic role definitions (markdown only)
+protocols/<name>/       dialog protocols (TOML + co-located round prompts)
+teams/<name>.toml       team composition (which roles, which providers, which protocol)
+bin/team-build          generator: assembles CAO profiles from a team TOML
+generated/<team>/       emitted CAO profiles, ready for `cao install`
+```
+
+`bin/team-build panel-of-experts --install` reads `teams/panel-of-experts.toml`, resolves its `protocol` (`protocols/panel-protocol/`) and the panelists' roles (`roles/<role>.md`), renders one moderator profile + N panelist profiles into `generated/panel-of-experts/`, and installs each into CAO.
+
+The shipped `panel-of-experts.toml` reproduces v0's composition. To define a new team, write a `teams/<name>.toml`, add any new roles to `roles/`, and (if the dialog structure differs from `panel-protocol`) add a new protocol under `protocols/<name>/`. No Python touched.
+
+**Launch** uses the generated moderator name `<team-name>_moderator`:
+
+```bash
+cao launch --agents panel-of-experts_moderator --auto-approve --headless "<topic>"
+```
+
+v1 lives alongside v0 — both work; v0's `bin/panel` and `bin/panel-install` remain the canonical path until v1 has a launcher script and more than one team to its name.
+
 ## Design Notes
 
 - **v0 (current)**: 5 profiles, 4-round protocol, manual launch. Uses CAO's 7 built-in providers.
