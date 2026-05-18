@@ -1,45 +1,55 @@
 # Known Issues
 
-## BLOCKER: CAO banner-detection fails for claude_code workers
+## RESOLVED — CAO banner-detection fails for claude_code workers
 
-**Status**: Punted 2026-04-23 pending upstream fix. Project is blocked on this for any panelist using `claude_code` provider.
+**Status**: Resolved 2026-05-17 against CAO main (commit at-or-after `eda4da2`).
 
-**Symptom**: `cao launch --provider claude_code ...` fails with:
+**Original symptom (2026-04-23)**: `cao launch --provider claude_code ...` failed with:
 
 ```
 500 Server Error: Internal Server Error
 {"detail":"Failed to create session: Claude Code initialization timed out after 30 seconds"}
 ```
 
-The same failure occurs for in-session `cao_assign` calls that spawn new `claude_code` workers.
+The inner `_handle_startup_prompts` loop detected the idle REPL prompt within ~370ms, but the outer init loop in `ClaudeCodeProvider.initialize()` timed out at 30s — apparently because the banner markers it scanned for (`──────`, "Claude Code", "bypass permissions", "trust this folder") never appeared with `--dangerously-skip-permissions`.
 
-**Evidence** (from `~/.aws/cli-agent-orchestrator/logs/cao_*.log`):
+**Resolution**: CAO main now ships `_ensure_skip_bypass_prompt_setting()` which writes `skipDangerousModePermissionPrompt: true` into `~/.claude/settings.json` before launching claude. The bypass-permissions dialog no longer interrupts startup, so the banner renders reliably and the outer loop matches as expected. Test: `cao launch --agents panel_moderator --auto-approve --headless "ping"` completes in ~5s with the moderator responding "pong" — verified on Claude Code v2.1.41+ and CAO main as of 2026-05-17.
 
+## ACTIVE (intentional upstream design, surprising in practice) — `cao launch --yolo` skips frontmatter `provider:`
+
+**Symptom**: launching a profile that declares `provider: claude_code` in YAML frontmatter with the `--yolo` flag results in the agent launching on `kiro_cli` (the CAO default) instead. The warning banner reads `Agent 'X' launching UNRESTRICTED on kiro_cli` regardless of what the profile specifies.
+
+**Root cause**: in `cli_agent_orchestrator/cli/commands/launch.py`, provider-resolution from frontmatter is gated inside the `else` branch of the permission-resolution conditional:
+
+```python
+if yolo:
+    resolved_allowed_tools = ["*"]
+elif allowed_tools:
+    resolved_allowed_tools = list(allowed_tools)
+else:
+    profile = load_agent_profile(agents)
+    ...
+    if provider is None:
+        provider = resolve_provider(agents, DEFAULT_PROVIDER)
 ```
-10:58:33  Created tmux session
-10:58:36,433  Shell ready
-10:58:36,492  send_keys: claude --dangerously-skip-permissions ...
-10:58:36,860  Claude Code idle prompt detected, no prompts needed   ← claude IS ready ~370ms after send_keys
-10:59:07,479  ERROR - Claude Code initialization timed out after 30 seconds
-10:59:07,533  Killed tmux session
-```
 
-Claude Code boots in under a second. The inner `_handle_startup_prompts` loop detects the idle REPL prompt correctly. The OUTER loop in `ClaudeCodeProvider.initialize()` (at `cli_agent_orchestrator/providers/claude_code.py:277-295`) then runs for the full 30s without matching, and the init fails.
+When `--yolo` is passed, the profile is never loaded, `resolve_provider` is never called, and the subsequent fallback `if provider is None: provider = DEFAULT_PROVIDER` makes kiro_cli the launch target — regardless of the profile's declared provider.
 
-**Hypothesis**: The outer loop requires BOTH (a) banner markers in `new_content` (regex looks for `──────` horizontal rule, or the literal strings "Claude Code" / "bypass permissions" / "trust this folder") AND (b) `get_status()` returning IDLE/COMPLETED. With `--dangerously-skip-permissions` (passed unconditionally by CAO), claude may not print the banner markers the outer loop expects. The inner loop returns early on idle detection; the outer loop keeps waiting for a banner that never appears.
+**This is upstream-documented behavior, not a bug**. PR [#196](https://github.com/awslabs/cli-agent-orchestrator/pull/196) (MERGED 2026-04-22) explicitly placed the resolution inside the `else` branch and documented in its description: *"Fall back to DEFAULT_PROVIDER when --provider was not given and profile resolution didn't set it (yolo, --allowed-tools, or missing profile)."* The rationale is that `--yolo` implies "unrestricted; don't bother loading the profile." Frontmatter `provider:` is collateral damage of that decision.
 
-**Uncertainty**: This hypothesis is not independently verified. A prior successful launch of `code_supervisor` on `claude_code` (terminal e3bc3e33 in session cao-1021d701) booted fine on the same CAO version. Something about the `panel_moderator` profile (prompt length? option combination? timing?) is specific to this failure. Establishing the precise root cause requires a proper CAO dev bench, which this project does not have.
+**Practical impact for this repo**: panel-of-experts requires per-panelist provider routing to maintain its cross-family disagreement property. Launching with `--yolo` silently violates that property — every panelist would run on kiro_cli. This is exactly the homogeneous-models failure mode the project exists to prevent.
 
-**Decision**: Do not patch AWS's installed code. File upstream issue; wait for fix. Keep the v0 repo as a complete reference implementation that will start working when CAO's banner detection is fixed upstream.
+**Workarounds (in priority order)**:
+1. **Use `--auto-approve` instead of `--yolo`**. Takes the profile-loading path, frontmatter provider is honored, frontmatter `allowedTools` restrictions are enforced (which `--yolo` would also override with `["*"]`). For panel-of-experts this is strictly better than yolo regardless of the provider issue.
+2. **Pass `--provider <X>` explicitly with `--yolo`** if yolo is required for some reason.
 
-**What does NOT work today**:
-- `cao launch --agents panel_moderator --provider claude_code ...`
-- `bin/panel "<topic>"`
-- In-session `cao_assign(agent_name="panel_moderator")` from any existing CAO supervisor on claude_code
+**Possible upstream feature request**: argue that `provider:` is a separate concern from `allowedTools` and the two should be resolved independently. Run `resolve_provider()` outside the yolo/allowed_tools conditional. Not yet filed; the current behavior is intentional per PR #196, so a discussion or feature request would be the right shape, not a bug report.
 
-**What MIGHT work today** (untested):
-- Rerouting panelists to non-claude_code providers (`gemini_cli`, `codex`, `copilot_cli`). The banner bug is in `claude_code.py`; other providers have different init paths.
-- Moderator on `codex` or `gemini_cli` is a design compromise — Claude is the strongest synthesizer — but would unblock v0 if tested successfully.
+## NOTE — `cao install --provider X` is misleading
+
+The `cao install <file> --provider <X>` flag accepts a provider name at install time but does NOT persist that selection anywhere `cao launch` reads from. The provider is read solely from the profile's YAML frontmatter at launch time (and only in the non-yolo path, per the entry above).
+
+**Recommendation**: always set `provider:` in the profile's YAML frontmatter. Treat the `cao install --provider` flag as informational only. This repo's `bin/panel-install` passes `--provider` for compatibility but the v0 profiles also declare `provider:` in frontmatter so launch resolution works correctly without depending on the install flag.
 
 ## Built-in CAO roles restrict Write/Edit
 

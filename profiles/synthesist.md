@@ -1,6 +1,7 @@
 ---
 name: synthesist
 description: Integrative panelist in a Panel of Experts — produces the final position document
+provider: claude_code
 role: developer
 mcpServers:
   cao-mcp-server:

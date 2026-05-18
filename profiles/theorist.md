@@ -1,6 +1,7 @@
 ---
 name: theorist
 description: First-principles / hypothesis-generating panelist in a Panel of Experts
+provider: claude_code
 role: developer
 mcpServers:
   cao-mcp-server:

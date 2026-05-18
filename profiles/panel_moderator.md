@@ -1,6 +1,7 @@
 ---
 name: panel_moderator
 description: Moderator of a heterogeneous multi-model Panel of Experts
+provider: claude_code
 role: supervisor
 allowedTools:
   - "@cao-mcp-server"

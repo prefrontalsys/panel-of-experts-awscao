@@ -88,7 +88,9 @@ Transcript lands in `transcripts/<topic-slug>/`.
 
 ## Status
 
-**v0 BLOCKED (2026-04-23)** pending upstream fix to CAO's claude_code banner-detection logic. See [docs/known-issues.md](docs/known-issues.md). The 5 profiles and launcher are complete; any panelist routed to `claude_code` currently fails to initialize. Project is punted until upstream resolves, or until the moderator is rerouted to a non-claude provider and tested.
+**v0 operational (2026-05-17).** The April 23 upstream blocker (CAO's claude_code banner-detection) was resolved in CAO main by the addition of `_ensure_skip_bypass_prompt_setting()`. Profiles now also declare `provider:` in frontmatter explicitly — `cao install --provider X` turned out not to persist the binding for launch resolution.
+
+**Important**: launch with `--auto-approve`, NOT `--yolo`. CAO's `--yolo` is documented to skip profile loading, which means it silently bypasses the frontmatter `provider:` field — every panelist would launch on `kiro_cli` (the CAO default), violating the cross-family disagreement property. See [docs/known-issues.md](docs/known-issues.md#active-intentional-upstream-design-surprising-in-practice--cao-launch---yolo-skips-frontmatter-provider).
 
 ## Design Notes
 

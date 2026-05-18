@@ -1,6 +1,7 @@
 ---
 name: empiricist
 description: Evidence-focused panelist in a Panel of Experts
+provider: gemini_cli
 role: developer
 mcpServers:
   cao-mcp-server:

@@ -1,6 +1,7 @@
 ---
 name: devils_advocate
 description: Adversarial panelist in a Panel of Experts — attacks the strongest current position
+provider: codex
 role: developer
 mcpServers:
   cao-mcp-server:
